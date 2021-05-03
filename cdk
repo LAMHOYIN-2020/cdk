@@ -1,0 +1,198 @@
+import core = require("@aws-cdk/core");
+import * as cdk from '@aws-cdk/core';
+import * as lambda from '@aws-cdk/aws-lambda';
+import * as apigw from '@aws-cdk/aws-apigateway';
+import { HitCounter } from './hitcounter';
+import { SqsSubscription } from "@aws-cdk/aws-sns-subscriptions";
+import * as rds from '@aws-cdk/aws-rds';
+import { DatabaseInstance, DatabaseInstanceEngine, StorageType } from "@aws-cdk/aws-rds";
+import * as elbv2 from '@aws-cdk/aws-elasticloadbalancingv2';
+import * as secretsManager from '@aws-cdk/aws-secretsmanager';
+import { listenerCount } from "cluster";
+import { TableViewer } from 'cdk-dynamo-table-viewer';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as sns from '@aws-cdk/aws-sns';
+import * as sqs from '@aws-cdk/aws-sqs';
+
+export class CdkWorkshopStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+
+//lambda
+    const project = new lambda.Function(this, 'project', {
+      runtime: lambda.Runtime.NODEJS_10_X,
+      code: lambda.Code.fromAsset('lambda'),
+      handler: 'project'
+    });
+
+    const helloWithCounter = new HitCounter(this, 'HelloHitCounter', {
+      downstream: project
+    });
+    
+    
+    
+    //vpc -2az -2private subnet -2pubilc subnet
+    const vpc = new ec2.Vpc(this, 'VPC', {
+     cidr: "10.0.0.0/18",
+     maxAzs: 2,
+     natGateways: 0, //   natGateways: 2
+     /*
+     subnetConfiguration: [       
+        {
+          cidrMask: 24,
+          name: 'public subnet1',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        {
+          cidrMask: 24,
+          name: 'public subnet2',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+        {
+          cidrMask: 22,
+          name: 'private subnet1',
+          subnetType: ec2.SubnetType.PRIVATE,
+        },
+        {
+          cidrMask: 22,
+          name: 'private subnet2',
+          subnetType: ec2.SubnetType.PRIVATE,
+        },
+        {
+          cidrMask: 28,
+          name: 'isolated subnet',
+          subnetType: ec2.SubnetType.ISOLATED,
+        }
+        
+      
+      ],*/
+   });
+   
+    // Endpoint
+    new apigw.LambdaRestApi(this, 'Endpoint for vpc', {
+      handler: helloWithCounter.handler
+    });
+
+    new TableViewer(this, 'ViewHitCounter', {
+      title: 'Hello Hits',
+      table: helloWithCounter.table
+    });
+    
+    //SNS & SQS
+     const topic = new sns.Topic(
+      this,
+      "SNS",
+    );
+    const queue = new sqs.Queue(this, "queue_one");
+    const queue_two = new sqs.Queue(this, 'queue_two');
+    topic.addSubscription(new SqsSubscription(queue));
+    
+    
+    //mysql database
+    const RDS = new DatabaseInstance(this, 'mysql-RDS-database', {
+    engine: DatabaseInstanceEngine.MYSQL,
+    instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
+    storageEncrypted: true,
+    multiAz: true,
+    databaseName: 'Web_database',
+    autoMinorVersionUpgrade: true,
+    deletionProtection: true,
+    maxAllocatedStorage: 100,
+    storageType: StorageType.GP2,
+    deleteAutomatedBackups: false,
+    copyTagsToSnapshot: false,
+    iamAuthentication: false,
+   // masterUserName: 'ttmssd',
+   // masterUserPassword: 'P@55worD',
+    vpcSubnets: {
+      subnetType: ec2.SubnetType.ISOLATED,
+    },
+    port: 3306,
+    vpc
+});
+ 
+ 
+//secret manager
+const secrets = new secretsManager.Secret (this, 'Mysql-Secret', {
+      description: "Mysql Secretkey",
+      secretName: "ttmssd-secretmanager",
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({}),
+        generateStringKey: "SECRET",
+      }
+    });
+const secret = {
+      engine: "mysql",
+      port: 3306,
+      username: "ttmssdsecret",
+      password: "P@55worD",
+    };
+    
+
+ 
+//sg for alb
+const albsg = new ec2.SecurityGroup(this, 'ALBSecurityGroup', { vpc });
+  albsg.addIngressRule(ec2.Peer.ipv4('0.0.0.0/0'), ec2.Port.tcp(443));
+//alb  
+const lb = new elbv2.ApplicationLoadBalancer(this, 'alb-sg', {
+  vpc,
+  internetFacing: true,
+  securityGroup: albsg, 
+});
+
+//const listener = lb.addListener('Listener', {
+     // port: 443
+    //});
+    
+//listener.addTargets('ttmcsapp.westus.cloudapp.azure.com', {
+  //priority: 10,
+  //conditions: [
+    //listenerCount.hostHeader(['ttmcsapp.westus.cloudapp.azure.com']),
+    //listenerCount.pathPattern(['/path']),
+  //],
+  //port: 8080
+//});    
+    
+//sg for mysql
+const dbsg = new ec2.SecurityGroup(this, 'MysqlSecurityGroup', { vpc });
+  dbsg.addIngressRule(ec2.Peer.ipv4('0.0.0.0/0'), ec2.Port.tcp(3306));
+  
+//sg for ec2
+const ec2sg = new ec2.SecurityGroup(this, 'EC2SecurityGroup', { vpc });
+  lb.addSecurityGroup(ec2sg);
+  albsg.addIngressRule(ec2.Peer.ipv4('0.0.0.0/0'), ec2.Port.tcp(443));
+  ec2sg.addIngressRule(ec2.Peer.ipv4('0.0.0.0/0'), ec2.Port.tcp(443));
+  dbsg.addIngressRule(ec2.Peer.ipv4('0.0.0.0/0'), ec2.Port.tcp(443));
+  
+//const cluster = new ecs.Cluster(this, "EcsCluster", { vpc });
+
+//const image = new DockerImageAsset(this, "DockerImage", {
+  //directory: join(__dirname, "..", "microblog"),
+//});
+
+ // new ecs_patterns.ApplicationLoadBalancedFargateService(
+     // this,
+     // "ApplicationFargateService",
+     // {
+      //  cluster: cluster,
+      //  cpu: 256,
+      //  desiredCount: 1,
+      //  taskImageOptions: {
+      //    image: ecs.ContainerImage.fromDockerImageAsset(image),
+      //    containerPort: 8082,
+      //  },
+      //  memoryLimitMiB: 512,
+      //  publicLoadBalancer: true,
+    //  }
+  //  );  
+
+//const autoscaling1 = new autoscaling.AutoScalingGroup(this, 'ASG', {
+  //vpc,
+  //InstanceType: ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE2, ec2.InstanceSize.MICRO),
+  //MachineImage: new ec2.AmazonLinuxImage() // get the latest Amazon Linux image
+//});
+
+
+  }
+}
