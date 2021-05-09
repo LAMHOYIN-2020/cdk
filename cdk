@@ -167,25 +167,7 @@ const ec2sg = new ec2.SecurityGroup(this, 'EC2SecurityGroup', { vpc });
   
 //const cluster = new ecs.Cluster(this, "EcsCluster", { vpc });
 
-//const image = new DockerImageAsset(this, "DockerImage", {
-  //directory: join(__dirname, "..", "microblog"),
-//});
-
- // new ecs_patterns.ApplicationLoadBalancedFargateService(
-     // this,
-     // "ApplicationFargateService",
-     // {
-      //  cluster: cluster,
-      //  cpu: 256,
-      //  desiredCount: 1,
-      //  taskImageOptions: {
-      //    image: ecs.ContainerImage.fromDockerImageAsset(image),
-      //    containerPort: 8082,
-      //  },
-      //  memoryLimitMiB: 512,
-      //  publicLoadBalancer: true,
-    //  }
-  //  );  
+ 
 
 //const autoscaling1 = new autoscaling.AutoScalingGroup(this, 'ASG', {
   //vpc,
